@@ -237,13 +237,12 @@ def health():
     return {'status': 'healthy', 'clients': len(clients)}
 
 if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 8000))
     print("\n" + "="*60)
     print("🚀 Starting Real-time Translation Server (Flask + Socket.IO)")
     print("="*60)
-    print("📍 HTTP Server: http://localhost:5000")
-    print("📍 Socket.IO: http://localhost:5000")
-    print("📝 Make sure clients connect to this address")
+    print(f"📍 Server running on port {port}")
     print("⚠️  Press Ctrl+C to stop the server")
     print("="*60 + "\n")
     
-    socketio.run(app, host='0.0.0.0', port=8000, debug=True, allow_unsafe_werkzeug=True)
+    socketio.run(app, host='0.0.0.0', port=port, debug=False)
