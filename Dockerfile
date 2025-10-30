@@ -6,12 +6,16 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies including FFmpeg
+# Install system dependencies including FFmpeg and ffprobe
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ffmpeg \
     libavcodec-extra \
-    && rm -rf /var/lib/apt/lists/*
+    libavformat-dev \
+    libavutil-dev \
+    && rm -rf /var/lib/apt/lists/* && \
+    ffmpeg -version && \
+    ffprobe -version
 
 # Create app directory
 WORKDIR /app
