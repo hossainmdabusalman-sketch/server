@@ -9,3 +9,4 @@ gTTS==2.5.3
 pydub==0.25.1
 gunicorn==21.2.0
 eventlet==0.35.2
+requests==2.31.0

@@ -1,58 +1,39 @@
 # server.py - Flask server with Socket.IO for real-time translation
 from flask import Flask, request
-from flask_socketio import SocketIO, emit, join_room, leave_room
+from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 import speech_recognition as sr
 from deep_translator import GoogleTranslator
 from gtts import gTTS
 import base64
-import io
-from pydub import AudioSegment
 import tempfile
 import os
-from pathlib import Path
+import shutil
+from pydub import AudioSegment
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-secret-key-here'
+app.config['SECRET_KEY'] = 'your-secret-key-change-in-production'
 CORS(app, resources={r"/*": {"origins": "*"}})
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
 # Store connected clients with their language preferences
 clients = {}
 
-# Try to find FFmpeg automatically
 def find_ffmpeg():
-    """Try to find FFmpeg in common locations"""
-    import shutil
-    if shutil.which("ffmpeg"):
-        print("✅ FFmpeg found in system PATH")
+    """Check if FFmpeg is available"""
+    ffmpeg_path = shutil.which("ffmpeg")
+    if ffmpeg_path:
+        print(f"✅ FFmpeg found at: {ffmpeg_path}")
         return True
     
-    # Common Windows locations
-    common_paths = [
-        r"C:\ffmpeg\bin\ffmpeg.exe",
-        r"C:\ffmpeg-8.0-essentials_build\bin\ffmpeg.exe",
-        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
-        Path.home() / "ffmpeg" / "bin" / "ffmpeg.exe",
-    ]
-    
-    for path in common_paths:
-        if os.path.exists(path):
-            AudioSegment.converter = str(path)
-            print(f"✅ FFmpeg found at: {path}")
-            return True
-    
     print("❌ FFmpeg not found!")
-    print("Please install FFmpeg:")
-    print("1. Download from: https://www.gyan.dev/ffmpeg/builds/")
-    print("2. Extract to C:\\ffmpeg\\")
-    print("3. Or add FFmpeg to your system PATH")
+    print("Please ensure FFmpeg is installed in the Docker container")
     return False
 
-# Try to configure FFmpeg
-if not find_ffmpeg():
-    print("\n⚠️ Server starting WITHOUT FFmpeg - audio conversion will fail!")
-    print("Press Ctrl+C to stop and install FFmpeg first.\n")
+# Check FFmpeg on startup
+ffmpeg_available = find_ffmpeg()
+if not ffmpeg_available:
+    print("⚠️ Server starting WITHOUT FFmpeg - audio conversion will fail!")
 
 def process_audio(audio_base64, source_lang, target_lang):
     """Process audio: Speech-to-Text -> Translate -> Text-to-Speech"""
@@ -61,33 +42,31 @@ def process_audio(audio_base64, source_lang, target_lang):
     mp3_path = None
     
     try:
-        print(f"📥 Received audio data: {len(audio_base64)} chars")
+        print(f"📥 Processing audio: {len(audio_base64)} chars")
         
         # Decode base64 audio
         audio_bytes = base64.b64decode(audio_base64)
-        print(f"📦 Decoded to {len(audio_bytes)} bytes")
+        print(f"📦 Decoded: {len(audio_bytes)} bytes")
         
         # Save to temporary file
         with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as temp_webm:
             temp_webm.write(audio_bytes)
             temp_webm_path = temp_webm.name
-        print(f"💾 Saved to temp file: {temp_webm_path}")
         
         # Convert to WAV
         print("🔄 Converting WebM to WAV...")
         sound = AudioSegment.from_file(temp_webm_path, format="webm")
         wav_path = temp_webm_path.replace('.webm', '.wav')
         sound.export(wav_path, format="wav")
-        print(f"✅ Converted to WAV: {wav_path}")
         
         # Speech Recognition
-        print(f"🎤 Recognizing speech in {source_lang}...")
+        print(f"🎤 Recognizing speech ({source_lang})...")
         recognizer = sr.Recognizer()
         with sr.AudioFile(wav_path) as source:
             audio_data = recognizer.record(source)
             text = recognizer.recognize_google(audio_data, language=source_lang)
         
-        print(f"📝 Recognized ({source_lang}): {text}")
+        print(f"📝 Recognized: {text}")
         
         # Translate
         if source_lang != target_lang:
@@ -97,20 +76,18 @@ def process_audio(audio_base64, source_lang, target_lang):
         else:
             translated_text = text
         
-        print(f"✅ Translated ({target_lang}): {translated_text}")
+        print(f"✅ Translated: {translated_text}")
         
-        # Text-to-Speech - Save to temporary file
-        print(f"🔊 Generating speech in {target_lang}...")
+        # Text-to-Speech
+        print(f"🔊 Generating speech ({target_lang})...")
         tts = gTTS(translated_text, lang=target_lang, slow=False)
         mp3_path = wav_path.replace('.wav', '.mp3')
         tts.save(mp3_path)
-        print(f"✅ Generated audio: {mp3_path}")
         
-        # Read the MP3 file and encode to base64
+        # Encode to base64
         with open(mp3_path, 'rb') as audio_file:
             audio_bytes = audio_file.read()
             translated_audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-        print(f"📤 Encoded audio: {len(translated_audio_base64)} chars")
         
         return {
             'original_text': text,
@@ -119,17 +96,16 @@ def process_audio(audio_base64, source_lang, target_lang):
         }
     
     except FileNotFoundError as e:
-        print(f"❌ File not found error: {e}")
-        print("This usually means FFmpeg is not installed or not in PATH")
+        print(f"❌ FFmpeg error: {e}")
         return None
     except sr.UnknownValueError:
-        print("❌ Speech recognition could not understand audio")
+        print("❌ Could not understand audio")
         return None
     except sr.RequestError as e:
-        print(f"❌ Speech recognition service error: {e}")
+        print(f"❌ Speech recognition error: {e}")
         return None
     except Exception as e:
-        print(f"❌ Error processing audio: {e}")
+        print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -139,7 +115,6 @@ def process_audio(audio_base64, source_lang, target_lang):
             if path and os.path.exists(path):
                 try:
                     os.unlink(path)
-                    print(f"🗑️ Cleaned up: {path}")
                 except:
                     pass
 
@@ -147,7 +122,7 @@ def process_audio(audio_base64, source_lang, target_lang):
 def handle_connect():
     """Handle client connection"""
     client_id = request.sid
-    print(f"✅ Client {client_id} connected")
+    print(f"✅ Client connected: {client_id}")
 
 @socketio.on('disconnect')
 def handle_disconnect():
@@ -159,7 +134,6 @@ def handle_disconnect():
         del clients[client_id]
         print(f"❌ {name} disconnected (remaining: {len(clients)})")
         
-        # Notify all clients
         emit('user_left', {
             'user': name,
             'lang': lang
@@ -176,7 +150,6 @@ def handle_register(data):
     print(f"👤 {clients[client_id]['name']} registered (lang: {data['lang']})")
     print(f"📊 Total clients: {len(clients)}")
     
-    # Notify all clients
     emit('user_joined', {
         'user': clients[client_id]['name'],
         'lang': data['lang']
@@ -188,7 +161,7 @@ def handle_audio(data):
     client_id = request.sid
     
     if client_id not in clients:
-        print(f"❌ Unknown client {client_id} sent audio")
+        print(f"❌ Unknown client: {client_id}")
         return
     
     source_lang = clients[client_id]['lang']
@@ -196,16 +169,15 @@ def handle_audio(data):
     speaker_name = clients[client_id]['name']
     
     print(f"\n{'='*60}")
-    print(f"🎙️ Processing audio from {speaker_name} ({source_lang})")
+    print(f"🎙️ Audio from {speaker_name} ({source_lang})")
     print(f"{'='*60}")
     
     # Process and broadcast to all other clients
     for other_id, other_client in clients.items():
         if other_id != client_id:
             target_lang = other_client['lang']
-            print(f"\n🔄 Translating for {other_client['name']} ({target_lang})...")
+            print(f"🔄 Translating for {other_client['name']} ({target_lang})...")
             
-            # Process translation
             result = process_audio(audio_base64, source_lang, target_lang)
             
             if result:
@@ -215,9 +187,9 @@ def handle_audio(data):
                     'translated_text': result['translated_text'],
                     'audio': result['audio']
                 }, room=other_id)
-                print(f"✅ Sent translation to {other_client['name']}")
+                print(f"✅ Sent to {other_client['name']}")
             else:
-                print(f"❌ Failed to process audio for {other_client['name']}")
+                print(f"❌ Failed for {other_client['name']}")
     
     print(f"{'='*60}\n")
 
@@ -228,21 +200,26 @@ def index():
         'status': 'running',
         'message': 'Real-time Translation Server',
         'connected_clients': len(clients),
+        'ffmpeg_available': ffmpeg_available,
         'clients': [{'name': c['name'], 'lang': c['lang']} for c in clients.values()]
     }
 
 @app.route('/health')
 def health():
     """Health check endpoint"""
-    return {'status': 'healthy', 'clients': len(clients)}
+    return {
+        'status': 'healthy', 
+        'clients': len(clients),
+        'ffmpeg': ffmpeg_available
+    }
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8000))
     print("\n" + "="*60)
-    print("🚀 Starting Real-time Translation Server (Flask + Socket.IO)")
+    print("🚀 Real-time Translation Server")
     print("="*60)
-    print(f"📍 Server running on port {port}")
-    print("⚠️  Press Ctrl+C to stop the server")
+    print(f"📍 Port: {port}")
+    print(f"🎬 FFmpeg: {'✅ Available' if ffmpeg_available else '❌ Missing'}")
     print("="*60 + "\n")
     
     socketio.run(app, host='0.0.0.0', port=port, debug=False)
